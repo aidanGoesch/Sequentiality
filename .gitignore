@@ -1,0 +1,16 @@
+__pycache__/
+idea/
+.*/
+
+# Don't comit the key
+./src/keys.py
+
+# don't upload images - they can just be generated
+*.png
+
+*.DS_Store
+
+# don't commit environment variables (API keys etc)
+.env
+
+test/
