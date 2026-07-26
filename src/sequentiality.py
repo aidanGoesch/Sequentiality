@@ -24,7 +24,9 @@ torch.set_float32_matmul_precision('high')
 class SequentialityModel:
     def __init__(self, model:str, topic : str, recall_length:int=4) -> None:
         """
-        input a list of models and compute the mean across model variants - makes sense to load the models when calculate_text_sequentiality is called rather than have them loaded in the init - would probably run out of memory if we tried to load them all at once
+        input a list of models and compute the mean across model variants - makes sense to load 
+        the models when calculate_text_sequentiality is called rather than have them loaded in 
+        the init - would probably run out of memory if we tried to load them all at once
         """
         self.sentences = []
 
@@ -369,12 +371,19 @@ class SequentialityModel:
             self.recall_length = history_len
 
 
-def calculate_sequentiality(model:str, history_lengths:list[int], text_input:list[str], topics:list[str]=[], save_path:str=None, default_topic:str="A short story", checkpoint_history_lengths:bool=False) -> pd.DataFrame:
+def calculate_sequentiality(model:str, history_lengths:list[int], text_input:list[str], topics:list[str]=[], n_shuffle:int=0,
+                            save_path:str=None, default_topic:str="A short story", checkpoint_history_lengths:bool=False) -> pd.DataFrame:
     """
     Function that calculates the sequentiality for a list of models and some input data.
 
     The function optionally takes a list of topics that are supposed to map one to one to the 
     inputted text data. If not, a default topic will be used.
+
+    Further, the function provides the option to calculate a baseline Sequentialiy value
+    through shuffling the sentences and words in the story. If the value for n_shuffles > 0, 
+    it will create a separate file where each story's sentences are shuffled n times, as well
+    as each story's words being shuffled n times. Note: this will significantly increase the 
+    runtime of this process.
     """
     # safe model name for saving in the right place
     safe_model_name = model.replace("/", "_")
@@ -395,6 +404,15 @@ def calculate_sequentiality(model:str, history_lengths:list[int], text_input:lis
                         "topic",
                         "model_id",
                         "history_length"])
+
+    if n_shuffle > 0:
+        shuffled_output = pd.DataFrame(columns=["scalar_text_sequentiality",
+                                "sentence_total_sequentialities",
+                                "sentence_contextual_sequentialities",
+                                "sentence_topic_sequentialities",
+                                "topic",
+                                "model_id",
+                                "history_length"])
     
     seq_model = None
     try:
@@ -403,7 +421,7 @@ def calculate_sequentiality(model:str, history_lengths:list[int], text_input:lis
         for history_length in history_lengths:
             # Skip if checkpoint already exists (only when checkpointing is enabled)
             if checkpoint_history_lengths:
-                checkpoint_file = f"./outputs/ensemble/{safe_model_name}/replication-recall{history_length}.csv"
+                checkpoint_file = f"./outputs/ensemble/{safe_model_name}/recall_len_{history_length}.csv"
                 if os.path.exists(checkpoint_file):
                     print(f"Skipping history length {history_length} (checkpoint exists)")
                     continue
@@ -419,9 +437,33 @@ def calculate_sequentiality(model:str, history_lengths:list[int], text_input:lis
                 new_row = [seq[0], seq[1], seq[2], seq[3], topic, model, history_length]
                 output.loc[len(output)] = new_row
 
+
+                if n_shuffle > 0:
+                    # Shuffle sentences and calculate sequentiality
+                    sentences = re.split(r"(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|!)\s", data)
+                    for _ in range(n_shuffle):
+                        np.random.shuffle(sentences)
+                        shuffled_text = " ".join(sentences)
+                        shuffled_seq = seq_model.calculate_text_sequentiality(shuffled_text, topic=topic)
+                        new_row_shuffled = [shuffled_seq[0], shuffled_seq[1], shuffled_seq[2], shuffled_seq[3], topic, model, history_length]
+                        shuffled_output.loc[len(shuffled_output)] = new_row_shuffled
+
+                    # shuffle all the words
+                    words = re.findall(r"[a-zA-Z']+", data)
+                    for _ in range(n_shuffle):
+                        np.random.shuffle(words)
+                        shuffled_text = " ".join(words)
+                        shuffled_seq = seq_model.calculate_text_sequentiality(shuffled_text, topic=topic)
+                        new_row_shuffled = [shuffled_seq[0], shuffled_seq[1], shuffled_seq[2], shuffled_seq[3], topic, model, history_length]
+                        shuffled_output.loc[len(shuffled_output)] = new_row_shuffled
+                        
+
             if checkpoint_history_lengths:
                 os.makedirs(f"./outputs/ensemble/{safe_model_name}/", exist_ok=True)
-                output.to_csv(f"./outputs/ensemble/{safe_model_name}/replication-recall{history_length}.csv", index=False)
+                output.to_csv(f"./outputs/ensemble/{safe_model_name}/recall_len_{history_length}.csv", index=False)
+
+                if n_shuffle:
+                    shuffled_output.to_csv(f"./outputs/ensemble/{safe_model_name}/shuffled_recall_len_{history_length}.csv", index=False)
 
                 print(f"checkpoint at history {history_length} saved")
                 
@@ -445,6 +487,11 @@ def calculate_sequentiality(model:str, history_lengths:list[int], text_input:lis
     # if there is a save path specified, save the csv
     if save_path is not None:
         output.to_csv(save_path)
+
+        # if shuffled baseline was created, save it
+        if n_shuffle:
+            shuffled_save_path = save_path.replace(".csv", "_shuffled.csv")
+            shuffled_output.to_csv(shuffled_save_path)
 
     return output
 
